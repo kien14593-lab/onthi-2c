@@ -1,6 +1,8 @@
 /* Ôn thi HK1 · 2C — password gate for the published copy (built by publish/build.js).
    All study content (data, app code, audio) is AES-256-GCM encrypted with a key derived from the class password
-   (PBKDF2-SHA256). Decryption happens only in the browser; the password is never sent anywhere. */
+   (PBKDF2-SHA256). Decryption happens only in the browser; the password is never sent anywhere.
+   The class link …/#k=<base64url key> (printed by build.js) opens the site without typing the password;
+   a URL fragment is never sent to the server. */
 'use strict';
 (function () {
   const C = window.VAULT, KEY = 'onthi2c.vk', MAX_TRACKS = 6;
@@ -9,7 +11,7 @@
   const b64e = u => btoa(String.fromCharCode.apply(null, u));
   const saved = {
     get() { try { return JSON.parse(sessionStorage.getItem(KEY) || localStorage.getItem(KEY) || 'null'); } catch (e) { return null; } },
-    set(v, remember) { try { (remember ? localStorage : sessionStorage).setItem(KEY, JSON.stringify(v)); } catch (e) { } },
+    set(v, remember) { saved.del(); try { (remember ? localStorage : sessionStorage).setItem(KEY, JSON.stringify(v)); } catch (e) { } },
     del() { try { localStorage.removeItem(KEY); sessionStorage.removeItem(KEY); } catch (e) { } },
   };
   let aes = null, appP = null;
@@ -41,9 +43,8 @@
   // Decrypted [[file, code], ...] of the app, or null if the key is wrong. Network errors are thrown.
   async function openWith(raw) {
     const buf = await appBuf();
-    const key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
-    let plain;
-    try { plain = await decrypt(key, buf); } catch (e) { return null; }
+    let key, plain;
+    try { key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']); plain = await decrypt(key, buf); } catch (e) { return null; }
     aes = key;
     return JSON.parse(new TextDecoder().decode(plain));
   }
@@ -73,7 +74,7 @@
   function screen(msg) {
     document.title = 'Ôn thi HK1 · 2C – Nhập mật khẩu';
     $('#main').innerHTML = '<div class="card lock"><div class="lock-ico">🔒</div><h1>Ôn thi HK1 · Lớp 2C</h1>' +
-      '<p class="muted">Trang ôn tập dành riêng cho lớp 2C VB2 Ngôn ngữ Anh.<br>Nhập mật khẩu lớp để vào (mỗi máy chỉ cần nhập 1 lần).</p>' +
+      '<p class="muted">Trang ôn tập dành riêng cho lớp 2C VB2 Ngôn ngữ Anh.<br>Bấm link lớp gửi trong nhóm, hoặc nhập mật khẩu lớp (mỗi máy chỉ cần 1 lần).</p>' +
       '<form id="vf"><div class="lock-row"><input id="vp" type="password" placeholder="Mật khẩu lớp" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" required>' +
       '<button id="ve" class="btn" type="button" title="Hiện / ẩn mật khẩu">👁</button></div>' +
       '<label class="small lock-rem"><input id="vr" type="checkbox" checked> Ghi nhớ trên máy này</label>' +
@@ -101,17 +102,23 @@
       return fail('Trình duyệt này chưa hỗ trợ. Hãy mở trang bằng Chrome, Edge hoặc Safari bản mới (địa chỉ phải bắt đầu bằng https://).');
     }
     appBuf().catch(() => { }); // start downloading while the password is being typed
-    const s = saved.get();
-    if (s && s.s === C.salt && s.k) {
-      $('#main').innerHTML = '<p class="muted" style="padding:2rem">⏳ Đang mở…</p>';
-      let files;
-      try { files = await openWith(b64d(s.k)); } catch (e) { return fail('Không tải được trang (' + e.message + '). Kiểm tra mạng rồi thử lại.'); }
-      if (files) return boot(files);
-      saved.del();
-      return screen('Mật khẩu của trang đã được đổi – bạn nhập mật khẩu mới nhé.');
+    // Anything a chat app appends after the 43-character key is ignored; the key is removed from the address bar.
+    const isLink = /^#k=/.test(location.hash), link = /^#k=([\w-]{43})/.exec(location.hash);
+    if (isLink) history.replaceState(null, '', location.pathname + location.search);
+    const badLink = 'Link này đã cũ hoặc bị thiếu ký tự – bạn lấy link mới trong nhóm lớp, hoặc nhập mật khẩu lớp.';
+    const s = saved.get(), tries = [];
+    if (link) tries.push({ k: link[1].replace(/-/g, '+').replace(/_/g, '/'), link: true });
+    if (s && s.s === C.salt && s.k) tries.push({ k: s.k });
+    if (!tries.length) { if (s) saved.del(); return screen(isLink ? badLink : ''); }
+    $('#main').innerHTML = '<p class="muted" style="padding:2rem">⏳ Đang mở…</p>';
+    for (const t of tries) {
+      let raw, files;
+      try { raw = b64d(t.k); } catch (e) { continue; }
+      try { files = await openWith(raw); } catch (e) { return fail('Không tải được trang (' + e.message + '). Kiểm tra mạng rồi thử lại.'); }
+      if (files) { if (t.link) saved.set({ s: C.salt, k: b64e(raw) }, true); return boot(files); }
     }
-    if (s) saved.del();
-    screen();
+    saved.del();
+    screen(isLink ? badLink : 'Mật khẩu của trang đã được đổi – bạn nhập mật khẩu mới nhé.');
   }
 
   // Encrypted textbook audio: download + decrypt on demand into blob: URLs (a few recent tracks are kept in memory).
